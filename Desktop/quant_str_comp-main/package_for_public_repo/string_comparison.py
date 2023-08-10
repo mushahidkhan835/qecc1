@@ -1,4 +1,3 @@
-import itertools
 import logging
 import math
 import textwrap
@@ -10,12 +9,9 @@ from qiskit import execute
 from qiskit.circuit.add_control import add_control
 from qiskit.compiler import transpile
 from qiskit.extensions import *
-from qiskit.quantum_info import Statevector
 from qiskit.quantum_info.operators import Operator
 from qiskit.visualization import plot_histogram
 from tabulate import tabulate
-
-from data_prep import DataPrep
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +21,7 @@ class StringComparator:
     def __init__(self, target, db, symbol_length=1, symbol_count=None, is_binary=True,
                  shots=8192, quantum_instance=Aer.get_backend('qasm_simulator'),
                  optimize_for=None, optimization_levels=None, attempts_per_optimization_level=None,
-                 default_dataset=False, t=1, p_pqm=False, storage_saving=False, storage_saving_method='jplf',
-                 storage_profiling_on=False, ep_pqm=False
+                 default_dataset=False, t=1, p_pqm=False
                  ):
         """
         Compare a string against a set of strings.
@@ -49,14 +44,9 @@ class StringComparator:
                                 When False, the database is initialized with strings passed in parameter `db`.
         :param p_pqm: When True, this will run the storage and retrieval algorithms of parametric probabilistic quantum memory
                       When False, this will run the extended p-pqm storage and retrieval algorithms
-        :param t: parameter `t, a value within `(0, 1]` range is used by P-PQM algorithm to compute weighted Hamming distance,
-                  which may improve performance of machine learning classification.
+        :param t: parameter `t, a value within `(0, 1]` range is used by P-PQM algorithm to compute weighted Hamming distance, 
+                  which may improve performance of machine learning classification. 
                   When `t=1` (the default value), P-PQM reduces to PQM.
-        :param storage_saving: Setting this to true will allow us to use the storage saving algorithm and setting it to False (which
-        it is by default) will allow the storage part of the algorithm to use EP-PQM storage algorithm or P-PQM storage algorithm.
-        :param storage_saving_method: if storage_saving == True, chose the method: 'jplf' (default) or 'avm'
-        :param storage_profiling_on: set to turn off generation of retrieval and measurement gates. Used to count the
-               number of gates in the storage circuit
         """
         self.t = t
         self.quantum_instance = quantum_instance
@@ -64,14 +54,13 @@ class StringComparator:
         self.is_binary = is_binary
         self.default_dataset = default_dataset
         self.p_pqm = p_pqm
-        self.ep_pqm = ep_pqm
 
         if is_binary:  # check that strings contain only 0s and 1s
             self.symbol_length = symbol_length
-            self.target_string, self.string_db = DataPrep.massage_binary_strings(target, db, symbol_length)
+            self.target_string, self.string_db = self._massage_binary_strings(target, db)
         else:
             self.target_string, self.string_db, self.symbol_length, self.symb_map = \
-                DataPrep.massage_symbol_strings(target, db, symbol_count)
+                self._massage_symbol_strings(target, db, symbol_count)
 
         self.input_size = len(self.target_string)
 
@@ -94,50 +83,6 @@ class StringComparator:
 
             self.circuit.measure(range(1, self.qubits_range), range(0, self.input_size + 1))
 
-        elif storage_saving:
-            self.memory_register = QuantumRegister(self.input_size)
-            qc_m = QuantumCircuit(self.memory_register)
-            for j in range(len(self.string_db)):  # reverse endianness
-                self.string_db[j] = self.string_db[j][::-1]
-            if storage_saving_method == 'jplf':
-                all_binary_strings_of_input_size = \
-                    ["".join(seq) for seq in itertools.product("01", repeat=self.input_size)]
-
-                for i in range(len(all_binary_strings_of_input_size)):
-                    if all_binary_strings_of_input_size[i] in set(self.string_db):
-                        all_binary_strings_of_input_size[i] = 1
-                    else:
-                        all_binary_strings_of_input_size[i] = 0
-                qc_m = self.storage_saving_method(qc_m, all_binary_strings_of_input_size)
-            elif storage_saving_method == 'avm':
-                qc_m.initialize(DataPrep.to_qiskit_dense_statevector_static(self.string_db))
-            else:
-                raise NotImplementedError(f'Unknown storage saving method {storage_saving_method}')
-
-            self.u_register_len = 1
-            self.u_register = QuantumRegister(self.u_register_len)
-            self.size_of_single_ham_register = math.floor(self.input_size / self.symbol_length)
-            self.single_ham_dist_register = QuantumRegister(self.size_of_single_ham_register)
-            self.qubits_range = self.size_of_single_ham_register + self.u_register_len + self.input_size
-            self.classic_register = ClassicalRegister(self.qubits_range - self.size_of_single_ham_register)
-
-            self.circuit = QuantumCircuit(self.u_register, self.memory_register, self.single_ham_dist_register,
-                                          self.classic_register)
-            for my_reg in range(self.size_of_single_ham_register):
-                self.circuit.x(self.single_ham_dist_register[my_reg])
-
-            self.circuit = self.circuit.compose(qc_m, self.memory_register)
-
-            for j in range(len(self.string_db)):
-                self.string_db[j] = self.string_db[j][::-1]
-
-            if not storage_profiling_on:
-                self._retrieve_information(self.target_string, register_u=0)
-
-                self.circuit.measure(range(0, self.qubits_range - self.size_of_single_ham_register),
-                                     range(0, self.qubits_range - self.size_of_single_ham_register))
-
-
         else:
             self.u_register_len = 2
             self.u_register = QuantumRegister(self.u_register_len)
@@ -146,9 +91,8 @@ class StringComparator:
             self.single_ham_dist_register = QuantumRegister(self.size_of_single_ham_register)
             self.qubits_range = self.size_of_single_ham_register + self.u_register_len + self.input_size
             self.classic_register = ClassicalRegister(self.qubits_range - self.size_of_single_ham_register - 1)
-            self.c1  = ClassicalRegister(self.symbol_length)
             self.circuit = QuantumCircuit(self.u_register, self.memory_register, self.single_ham_dist_register,
-                                          self.classic_register, self.c1)
+                                          self.classic_register)
 
             # TODO: we can use the attribute directly and not pass it as a parameter in the next two function calls
 
@@ -157,38 +101,19 @@ class StringComparator:
             if not default_dataset:
                 self._store_information(self.string_db)
 
-            if not storage_profiling_on:
-                self._retrieve_information(self.target_string)
+            self._retrieve_information(self.target_string)
 
-                self.circuit.measure(range(1, self.qubits_range - self.size_of_single_ham_register),
-                                     range(0, self.qubits_range - self.size_of_single_ham_register - 1))
+            self.circuit.measure(range(1, self.qubits_range - self.size_of_single_ham_register),
+                                 range(0, self.qubits_range - self.size_of_single_ham_register - 1))
 
- 
         if optimize_for is not None:
             self._optimize_circuit(optimize_for, optimization_levels=optimization_levels,
                                    attempts_per_optimization_level=attempts_per_optimization_level)
 
         self.results = None
 
-    def storage_saving_method(self, qc, v):
-        n = int(math.log(len(v)) / math.log(2))
-        ss = sum(v)
-        if v[0] == 0:
-            qc.h(range(n))
-            statevector = math.sqrt(2 ** n) * Statevector(qc)
-            data_base_state = Statevector(v)
-            projector = data_base_state.to_operator()
-            state = 1 / math.sqrt(ss ** 3) * statevector.evolve(projector)
-        else:
-            statevector = Statevector(qc)
-            data_base_state = Statevector(v)
-            projector = data_base_state.to_operator()
-            state = 1 / math.sqrt(ss) * statevector.evolve(projector)
-        qc.initialize(state)
-        return qc
-
-    def _optimize_circuit(self, backend_architecture, optimization_levels=range(1, 3),
-                          attempts_per_optimization_level=50):
+    def _optimize_circuit(self, backend_architecture, optimization_levels=range(0, 1),
+                          attempts_per_optimization_level=1):
         """
         Try to optimize circuit by minimizing it's depth. Currently, it does a naive grid search.
 
@@ -234,14 +159,124 @@ class StringComparator:
         except AttributeError:
             raise AttributeError("Optimizer was not invoked, no stats present")
 
+    def _massage_binary_strings(self, target, db):
+        """
+        Massage binary strings and perform sanity checks
+
+        :param target: target string
+        :param db: database of strings
+        :return: massaged target and database strings
+        """
+        # sanity checks
+        if not isinstance(target, str):
+            raise TypeError("Target string should be of type str")
+        for my_str in db:
+            if not isinstance(my_str, str):
+                raise TypeError(f"Database string {my_str} should be of type str")
+
+        bits_in_str_cnt = len(target)
+        symbols_in_str_cnt = bits_in_str_cnt / self.symbol_length
+        if bits_in_str_cnt % symbols_in_str_cnt != 0:
+            raise TypeError(f"Possible data corruption: bit_count MOD symbol_length should be 0, but got "
+                            f"{bits_in_str_cnt % symbols_in_str_cnt}")
+
+        for my_str in db:
+            if len(my_str) != bits_in_str_cnt:
+                raise TypeError(
+                    f"Target string size is {bits_in_str_cnt}, but db string {my_str} size is {len(my_str)}")
+
+        if not self.is_str_binary(target):
+            raise TypeError(
+                f"Target string should be binary, but the string {target} has these characters {set(target)}")
+
+        for my_str in db:
+            if not self.is_str_binary(my_str):
+                raise TypeError(f"Strings in the database should be binary, but the string {my_str} "
+                                f"has these characters {set(my_str)}")
+
+        return target, db
+
+    @staticmethod
+    def _massage_symbol_strings(target, db, override_symbol_count=None):
+        """
+        Massage binary strings and perform sanity checks
+
+        :param target: target string
+        :param db: database of strings
+        :param override_symbol_count: number of symbols in the alphabet, if None -- determined automatically
+        :return: target string converted to binary format,
+                 database strings converted to binary format,
+                 length of symbol in binary format,
+                 map of textual symbols to their binary representation (used only for debugging)
+        """
+
+        # sanity checks
+        if not isinstance(target, list):
+            raise TypeError("Target string should be of type list")
+        for my_str in db:
+            if not isinstance(my_str, list):
+                raise TypeError(f"Database string {my_str} should be of type list")
+
+        # compute  strings' length
+        symbols_in_str_cnt = len(target)
+        for my_str in db:
+            if len(my_str) != symbols_in_str_cnt:
+                raise TypeError(
+                    f"Target string has {symbols_in_str_cnt} symbols, but db string {my_str} has {len(my_str)}")
+
+        # get distinct symbols
+        symbols = {}
+        id_cnt = 0
+        for symbol in target:
+            if symbol not in symbols:
+                symbols[symbol] = id_cnt
+                id_cnt += 1
+        for my_str in db:
+            for symbol in my_str:
+                if symbol not in symbols:
+                    symbols[symbol] = id_cnt
+                    id_cnt += 1
+
+        # override symbol length if symbol count was specified by the user
+        dic_symbol_count = len(symbols)
+        if override_symbol_count is not None:
+            if dic_symbol_count > override_symbol_count:
+                raise ValueError(f"Alphabet has at least {dic_symbol_count}, "
+                                 f"but the user asked only for {override_symbol_count} symbols")
+            dic_symbol_count = override_symbol_count
+
+        # figure out how many bits a symbol needs
+        symbol_length = math.ceil(math.log2(dic_symbol_count))
+        logger.debug(f"We got {dic_symbol_count} distinct symbols requiring {symbol_length} bits per symbol")
+
+        # convert ids for the symbols to binary strings
+        bin_format = f"0{symbol_length}b"
+        for symbol in symbols:
+            symbols[symbol] = format(symbols[symbol], bin_format)
+
+        # now let's produce binary strings
+        # TODO: += is not the most efficient way to concatenate strings, think of a better way
+        target_bin = ""
+        for symbol in target:
+            target_bin += symbols[symbol]
+
+        db_bin = []
+        for my_str in db:
+            db_str_bin = ""
+            for symbol in my_str:
+                db_str_bin += symbols[symbol]
+            db_bin.append(db_str_bin)
+
+        return target_bin, db_bin, symbol_length, symbols
+
     def run(self, quantum_instance=None):
         """
         Execute the circuit and return a data structure with details of the results
 
         :param quantum_instance: the pointer to the backend on which we want to execute the code
                (overwrites the backend specified in the constructor)
-        :return: a dictionary containing hamming distance and p-values for each string in the database,
-                 along with extra debug info (raw frequency count and the probability of measuring
+        :return: a dictionary containing hamming distance and p-values for each string in the database, 
+                 along with extra debug info (raw frequency count and the probability of measuring 
                  register c as 0)
         """
         if quantum_instance is not None:
@@ -249,12 +284,7 @@ class StringComparator:
 
         job = execute(self.circuit, self.quantum_instance, shots=self.shots)
         results_raw = job.result().get_counts(self.circuit)
-        if self.ep_pqm:
-            results_raw_1 = {}
-            for key in results_raw:
-                results_raw_1[key.split(" ")[1]] = results_raw[key]
-            
-            results_raw  = results_raw_1
+
         # tweak raw results and add those strings that have 0 shots/pulses associated with them
         # these are the strings that will have hamming distance equal to the total number of symbols
         for string in self.string_db:
@@ -348,6 +378,20 @@ class StringComparator:
         print(tabulate(actual_vs_expected, headers='keys'))
         return actual_vs_expected
 
+    @staticmethod
+    def is_str_binary(my_str):
+        """
+        Check if a string contains only 0s and 1s
+
+        :param my_str: string to check
+        :return: True if binary, False -- otherwise
+        """
+        my_chars = set(my_str)
+        if my_chars.issubset({'0', '1'}):
+            return True
+        else:
+            return False
+
     def _get_count_of_useful_values(self, raw_results):
         """
         Get count of the strings present in the database and the useful number of shots
@@ -390,19 +434,7 @@ class StringComparator:
             log = logs[ind]
 
             self._copy_pattern_to_memory_register(log)
-            
-            if self.ep_pqm:
-                self.circuit.measure(self.memory_register, range(0, self.input_size))
-                max_val = 0
-                l = self.input_size
-                while l > 0:
-                    max_val += 2 ** (l - 1)
-                    l-=1
-
-                self.circuit.x(self.u_register[0]).c_if(self.classic_register, max_val)
-            else:
-                self.circuit.mct(self.memory_register, self.u_register[0])
-                
+            self.circuit.mct(self.memory_register, self.u_register[0])
             _x = len(logs) + 1 - (ind + 1)
             cs = Operator([
                 [1, 0, 0, 0],
@@ -413,11 +445,7 @@ class StringComparator:
             self.circuit.unitary(cs, [1, 0], label='cs')
 
             # Reverse previous operations
-            if self.ep_pqm:
-                self.circuit.x(self.u_register[0]).c_if(self.classic_register, max_val)
-            else:
-                self.circuit.mct(self.memory_register, self.u_register[0])
-
+            self.circuit.mct(self.memory_register, self.u_register[0])
             self._copy_pattern_to_memory_register(log)
 
     def _store_information_p_pqm(self, logs):
@@ -481,35 +509,25 @@ class StringComparator:
                 if my_string[j] == "1":
                     self.circuit.x(self.memory_register[j])
 
-    def _copy_pattern_to_memory_register(self, my_string, i=1):
+    def _copy_pattern_to_memory_register(self, my_string):
         for j in range(len(my_string)):
             if my_string[j] == "1":
-                self.circuit.cx(self.u_register[i], self.memory_register[j])
+                self.circuit.cx(self.u_register[1], self.memory_register[j])
             else:
                 self.circuit.x(self.memory_register[j])
 
-    def _compare_input_and_pattern_for_single_ham_register(self, i):
+    def _compare_input_and_pattern_for_single_ham_register(self):
         for j in range(self.size_of_single_ham_register):
             idx = self.symbol_length * j
             temp = []
             for ind in range(idx, idx + self.symbol_length):
-                temp.append(ind + i)
-            if self.ep_pqm:
-                max_val = 0
-                l = self.symbol_length
-                while l > 0:
-                    max_val += 2 ** (l - 1)
-                    l-=1
-                    
-                self.circuit.measure(temp, self.c1)
-                self.circuit.x(self.single_ham_dist_register[j]).c_if(self.c1,  max_val)
-            else:
-                self.circuit.mct(temp, self.single_ham_dist_register[j])
+                temp.append(ind + 2)
+            self.circuit.mct(temp, self.single_ham_dist_register[j])
 
-    def _retrieve_information(self, input_string, register_u=1):
-        self.circuit.h(register_u)
+    def _retrieve_information(self, input_string):
+        self.circuit.h(1)
         self._fill_ones_in_memory_register_which_are_equal_to_bits_in_pattern(input_string)
-        self._compare_input_and_pattern_for_single_ham_register(register_u+1)
+        self._compare_input_and_pattern_for_single_ham_register()
         u_gate = Operator([
             [math.e ** (complex(0, 1) * math.pi / (2 * ((self.input_size/self.symbol_length) * self.t))), 0],
             [0, 1]
@@ -523,13 +541,13 @@ class StringComparator:
         gate2x2 = UnitaryGate(u_minus_2_gate)
         gate2x2_ctrl = add_control(gate2x2, 1, 'CU2x2', '1')
         for j in range(self.size_of_single_ham_register):
-            self.circuit.append(gate2x2_ctrl, [register_u, self.single_ham_dist_register[j]])
+            self.circuit.append(gate2x2_ctrl, [1, self.single_ham_dist_register[j]])
 
         # Reverse previous operations
-        self._compare_input_and_pattern_for_single_ham_register(register_u+1)
+        self._compare_input_and_pattern_for_single_ham_register()
         self._fill_ones_in_memory_register_which_are_equal_to_bits_in_pattern(input_string)
 
-        self.circuit.h(register_u)
+        self.circuit.h(1)
 
     def _retrieve_information_P_PQM(self, input_string):
         self.circuit.h(1)
@@ -667,7 +685,7 @@ if __name__ == "__main__":
     print("Example 1")
     # Normal execution
     dataset = ['1001', '1000', '1011', '0001', '1101', '1111', '0110']
-    x = StringComparator('1001', dataset, symbol_length=2, ep_pqm=True)
+    x = StringComparator('1001', dataset, symbol_length=2)
     results = x.run()
     print(f"probability of measuring register c as 0 is {results['prob_of_measuring_register_c_as_0']}")
     print(f"p-values are {results['p_values']}")
@@ -684,7 +702,7 @@ if __name__ == "__main__":
     print("\nExample 2")
     # Normal execution
     dataset = ['01001', '11010', '01110', '10110']
-    x = StringComparator('10110', dataset, symbol_length=1, ep_pqm=True)
+    x = StringComparator('10110', dataset, symbol_length=1)
     results = x.run()
     print(f"probability of measuring register c as 0 is {results['prob_of_measuring_register_c_as_0']}")
     print(f"p-values are {results['p_values']}")
@@ -708,7 +726,7 @@ if __name__ == "__main__":
                ['quux', 'baz', 'qux']
                ]
     target = ['foo', 'bar', 'foo']
-    x = StringComparator(target, dataset, is_binary=False, shots=100000, ep_pqm=True)
+    x = StringComparator(target, dataset, is_binary=False, shots=100000)
     # Note that we need to increase shots from 10K to 100K-- otherwise some times ranking gets broken
     results = x.run()
     print(f"probability of measuring register c as 0 is {results['prob_of_measuring_register_c_as_0']}")
@@ -728,25 +746,25 @@ if __name__ == "__main__":
     # Normal execution
     dataset = ['000001000', '000001010', '000010000', '010001000', '010011000', '010011100']
     x = StringComparator('000001000', dataset,
-                         symbol_length=3, shots=100000, ep_pqm=True)
+                         symbol_length=3, shots=100000)
     results = x.run()
-    # print(f"probability of measuring register c as 0 is {results['prob_of_measuring_register_c_as_0']}")
-    # print(f"p-values are {results['p_values']}")
-    # print(f"hamming distances are {results['hamming_distances']}")
+    print(f"probability of measuring register c as 0 is {results['prob_of_measuring_register_c_as_0']}")
+    print(f"p-values are {results['p_values']}")
+    print(f"hamming distances are {results['hamming_distances']}")
     # Extra debug info
-    # x.debug_print_raw_shots()
+    x.debug_print_raw_shots()
     x.debug_produce_summary_stats()
     print(f"Circuit's depth is {x.get_circuit_depth()}")
     print(f"Transpiled circuit's depth is {x.get_transpiled_circuit_depth()}")
-    # x.visualise_circuit("example4_circuit.pdf")
-    # x.visualise_transpiled_circuit("example4_transpiled_circuit.pdf")
+    x.visualise_circuit("example4_circuit.pdf")
+    x.visualise_transpiled_circuit("example4_transpiled_circuit.pdf")
 
     # Example 5
     print("\nExample 5 -- for the paper")
     # Normal execution
     dataset = [['foo', 'bar', 'foo'],  ['foo', 'bar', 'bar'], ['foo', 'quux', 'bar'], ['bar', 'foo', 'foo']]
     target = ['foo', 'quux', 'foo']
-    x = StringComparator(target, dataset, is_binary=False, shots=10000, ep_pqm=True)
+    x = StringComparator(target, dataset, is_binary=False, shots=10000)
     results = x.run()
     print(f"probability of measuring register c as 0 is {results['prob_of_measuring_register_c_as_0']}")
     print(f"p-values are {results['p_values']}")
